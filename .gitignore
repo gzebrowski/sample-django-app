@@ -1,0 +1,9 @@
+*.pyc
+*.py~
+build/*
+dist/*
+local_settings.py
+static/testing_items/*
+db.sqlite*
+solrindexer/settings_oldmogile.py
+local_config.py

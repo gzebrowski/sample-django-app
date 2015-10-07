@@ -1,0 +1,40 @@
+.status-all {
+color: #FFF;
+background-color: #777;
+padding: 3px;
+text-transform: uppercase;
+font-weight: bold;
+}
+.status-all.status-s0 {
+/* in progress */
+background-color: #EE9900;
+}
+.status-all.status-s1 {
+/* in progress */
+background-color: #aaEE00;
+}
+.status-all.status-s2 {
+/* finished */
+background-color: #00aa00;
+}
+
+.status-all.status-s3 {
+/* canceling */
+background-color: #888800;
+}
+.status-all.status-s4 {
+/* canceled */
+background-color: #008888;
+}
+.status-all.status-s5 {
+/* failed */
+background-color: #999;
+}
+.status-all.status-s6 {
+/* terminated */
+background-color: #999;
+}
+.status-all.status-s7 {
+/* awaiting */
+background-color: #AFA;
+}
