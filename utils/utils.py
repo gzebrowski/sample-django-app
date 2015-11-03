@@ -21,11 +21,51 @@ distrib_servers = [x['id'] for x in settings.DISTRIBUTED_SERVERS]
 ring = HashRing(distrib_servers, {x['id']: x['weight'] for x in settings.DISTRIBUTED_SERVERS})
 
 
+class TimeDebuger(object):
+    class DebWrapper(object):
+        def __init__(self, debug_object, key):
+            self.debug_object = debug_object
+            self.key = key
+            self.start_time = 0
+
+        def __enter__(self):
+            self.start_time = time.time()
+            return self
+
+        def __exit__(self, type, value, traceback):
+            self.debug_object.log_time(self.key, time.time() - self.start_time)
+
+    def __init__(self):
+        self.time_logs = {}
+
+    def __call__(self, key):
+        return TimeDebuger.DebWrapper(self, key)
+
+    def log_time(self, key, val):
+        if key not in self.time_logs:
+            self.time_logs[key] = {'times': 0, 'value': 0}
+        self.time_logs[key]['times'] += 1
+        self.time_logs[key]['value'] += val
+
+    def dump(self):
+        lines = []
+        fmt_str = "%s: total: %s, times: %s, avg: %s"
+        tml = self.time_logs
+        for k in tml:
+            lines.append(fmt_str % (k, tml[k]['value'], tml[k]['times'],
+                         tml[k]['value'] / tml[k]['times']))
+        return '\n'.join(lines)
+
+
 def is_my_file(filename):
     res = filter(lambda x: x.isdigit(), filename.replace('\\', '/').split('/'))
     if res and len(res) > 1 and len(res[0]) == 3 and len(res[1]) == 10:
         return settings.DISTRIBUTED_SERVER_ID == ring.get_node('/'.join(res))
     return settings.DISTRIBUTED_SERVER_ID == settings.DISTRIBUTED_SERVERS[0]['id']
+
+
+def is_this_mine(val):
+    return settings.DISTRIBUTED_SERVER_ID == ring.get_node(str(val))
 
 
 def get_machine_by_path(filename):
@@ -316,6 +356,9 @@ class MongoSynchronizer(object):
     def delete(self, instance_id):
         if self.django_id:
             self.class_mongo.objects(**{self.django_id: instance_id}).using(self.using).delete()
+
+    def empty_mongo(self):
+        self.filter().all().delete()
 
     def get_mongo_obj(self, instance):
         if self.django_id:

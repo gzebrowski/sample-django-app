@@ -98,14 +98,20 @@ class SearchMetaClass(type):
                 my_fields.append((k, v))
             else:
                 newattrs[k] = v
-        newattrs['fields'] = OrderedDict(my_fields)
+        if my_fields:
+            newattrs['fields'] = OrderedDict(my_fields)
+        else:
+            newattrs = attrs
         return super(SearchMetaClass, cls).__new__(cls, name, bases, newattrs)
 
 
 class SearchIndex(object):
     __metaclass__ = SearchMetaClass
     COMMIT_PER = 200
+    AUTOCOMMIT = False
     UNIQUE_FIELD = None
+    DB_STEP = 500
+    RUN_IN_PARALLEL = False
 
     def __init__(self, client, *args, **kwargs):
         self.using = kwargs.get('using', None)
@@ -114,17 +120,51 @@ class SearchIndex(object):
         self.item_callback = kwargs.get('item_callback', None)
         self.client = client
         self.start_from = kwargs.get('start_from', 0)
+        self.db_step = int(kwargs.get('db_step', self.DB_STEP))
+        self.commit_per = int(kwargs.get('commit_per', self.COMMIT_PER))
+        self.run_in_parallel = kwargs.get('run_in_parallel', self.RUN_IN_PARALLEL)
+        self._buffer = []
+        self.items_sent = 0
 
     def process_part(self, rng, step, queryset=None):
         qset = queryset.all()[rng:rng + step] if queryset is not None else self.index_queryset(using=self.using)[rng:rng + step]
-        for obj in qset:
+        for no, obj in enumerate(qset):
             self.process_object(obj)
+            if not self.AUTOCOMMIT:
+                self.commit()
+
+    def process_record(self, data):
+        if isinstance(data, (list, tuple)):
+            self.client.add_many(data)
+            if not self.AUTOCOMMIT:
+                self.commit()
+        elif isinstance(data, dict):
+            if self.run_in_parallel:
+                if len(self._buffer) >= self.commit_per:
+                    self.flush()
+                self._buffer.append(data)
+            else:
+                self.client.add(**data)
+                self.items_sent += 1
+                if self.items_sent > self.commit_per:
+                    self.flush()
+
+    def flush(self):
+        if self._buffer:
+            self.client.add_many(self._buffer)
+        if not self.AUTOCOMMIT and (self._buffer or self.items_sent):
+            self.commit()
+        self._buffer = []
+        self.items_sent = 0
+
+    def commit(self):
+        self.client.commit()
 
     def process_object(self, obj):
         data = self.prepare_data(obj)
         error = None
         try:
-            self.client.add(**data)
+            self.process_record(data)
         except Exception, e:
             trb = traceback.format_exc()
             body = unicode(getattr(e, 'body', '!! No exception body supplied !!'))
@@ -137,11 +177,13 @@ class SearchIndex(object):
     def run(self):
         qset = self.index_queryset(using=self.using)
         self.index_by_qset(qset)
+        self.flush()
 
     def reindex_by_qset(self, del_qset, index_qset=None):
         index_qset = index_qset or del_qset.all()
         self.delete_by_qset(del_qset)
         self.index_by_qset(index_qset)
+        self.commit()
 
     def delete_by_qset(self, qset):
         fields = [x[1] for x in self.fields.items() if x[0] == self.UNIQUE_FIELD]
@@ -150,15 +192,16 @@ class SearchIndex(object):
         field = fields[0]
         model_attr = getattr(field, 'model_attr') or self.UNIQUE_FIELD
         solr_field = getattr(field, 'index_fieldname') or self.UNIQUE_FIELD
-        for item in qset.only(model_attr):
+        for nr, item in enumerate(qset.only(model_attr)):
             self.client.delete_query("%s:%s" % (solr_field, solr_str_escape(getattr(item, model_attr))))
+            if not (nr % 1000) and nr:
+                self.client.commit()
         self.client.commit()
 
     def index_by_qset(self, qset):
         cnt = qset.count()
-        for rng in xrange(self.start_from, cnt, self.COMMIT_PER):
-            self.process_part(rng, self.COMMIT_PER, queryset=qset)
-            self.client.commit()
+        for rng in xrange(self.start_from, cnt, self.db_step):
+            self.process_part(rng, self.db_step, queryset=qset)
 
     def prepare_data(self, obj):
         result = {}

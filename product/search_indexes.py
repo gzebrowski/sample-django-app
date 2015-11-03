@@ -7,6 +7,7 @@ import urlparse
 from utils.local_solr import indexes
 from .models import Product, ProductTag
 from django.template.defaultfilters import slugify
+from category.models import Category
 
 countries_map = {2: 'United States', 1: 'United Kingdom'}
 
@@ -17,6 +18,7 @@ class ProductIndex(indexes.SearchIndex, indexes.Indexable):
     UNIQUE_FIELD = 'pk'
 
     # text = indexes.CharField(document=True, use_template=True)
+    database_pk = indexes.IntegerField(model_attr='id')
     product_title_slug = indexes.CharField()
     product_name = indexes.CharField(model_attr='product_name')
     source_text = indexes.CharField()
@@ -36,7 +38,6 @@ class ProductIndex(indexes.SearchIndex, indexes.Indexable):
     sale_percentage = indexes.MultiValueField(null=True)
     subcategory_slug = indexes.MultiValueField()
     product_category = indexes.MultiValueField()
-    product_category_s = indexes.MultiValueField()
     brand_slug = indexes.CharField()
     product_brand = indexes.CharField()
     product_id = indexes.CharField(model_attr='product_id')
@@ -45,14 +46,15 @@ class ProductIndex(indexes.SearchIndex, indexes.Indexable):
     product_colors = indexes.MultiValueField(null=True)
     color_slug = indexes.MultiValueField(null=True)
     tag = indexes.MultiValueField(null=True)
-    product_colors_text = indexes.MultiValueField(null=True)
     in_collection = indexes.IntegerField(null=True, model_attr='in_collection')
+    hierarchy_category = indexes.MultiValueField(null=True)
     # product_brand_text = indexes.CharField()
 
     def __init__(self, *args, **kwargs):
         self.extra_filters = kwargs.get('extra_filters') or {}
         super(ProductIndex, self).__init__(*args, **kwargs)
         self._all_tags = map(unicode.lower, list(ProductTag.objects.all().values_list('tag', flat=True)))
+        self._all_categories = dict([(c.id, c.path) for c in Category.objects.all().only('id', 'path')])
 
     def get_model(self):
         return Product
@@ -66,6 +68,12 @@ class ProductIndex(indexes.SearchIndex, indexes.Indexable):
                 res.append(u'SALE')
             obj._prep_category = res
         return obj._prep_category
+
+    def prepare_hierarchy_category(self, obj):
+        if obj.category:
+            path = self._all_categories.get(obj.category.id)
+            if path:
+                return [path[:x] for x in range(2, len(path) + 1, 2)]
 
     def prepare_main_category(self, obj):
         return self._prep_categories(obj)
@@ -116,9 +124,6 @@ class ProductIndex(indexes.SearchIndex, indexes.Indexable):
         # if obj.product_category.strip().upper() == u'ACCESSORIES':
         return non_accesories_sale([x.strip().upper() for x in obj.product_category.split(',')])
 
-    def prepare_product_category_s(self, obj):
-        return [x.strip().upper() for x in self.prepare_product_category(obj)]
-
     def prepare_brand_slug(self, obj):
         return slugify(obj.brand.name)
 
@@ -154,9 +159,6 @@ class ProductIndex(indexes.SearchIndex, indexes.Indexable):
             if t in all_text:
                 res.append(t)
         return res
-
-    def prepare_product_colors_text(self, obj):
-        return self.prepare_product_colors(obj)
 
     def prepare_product_brand_text(self, obj):
         return self.prepare_product_brand(obj)

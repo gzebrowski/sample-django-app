@@ -168,6 +168,14 @@ class WorkingTaskAdmin(admin.ModelAdmin):
         queryset.filter(status=WorkingTask.STATUS_IN_PROGRESS).update(status=WorkingTask.STATUS_CANCELING)
     cancel_tasks.short_description = "stop selected tasks"
 
+    def save_related(self, request, form, formsets, change):
+        result = super(WorkingTaskAdmin, self).save_related(request, form, formsets, change)
+        if form.instance:
+            for inst in form.instance.mychildren.all():
+                for si in form.instance.solr_instances.all():
+                    inst.solr_instances.add(si)
+        return result
+
     def remove_task(self, request, queryset):
         queryset.filter(status__in=(WorkingTask.STATUS_FINISHED,
                                     WorkingTask.STATUS_CANCELED,

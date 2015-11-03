@@ -25,7 +25,10 @@ class MyIterator(object):
         the_nodes = [self.node] if self.node else self.obj.servers.keys()
         for node in the_nodes:
             self.current_node = node
-            keys = self.obj.clients[node].list_keys(path)
+            try:
+                keys = self.obj.clients[node].list_keys(path)
+            except MogileFSError:
+                continue
             yield keys
 
     def __iter__(self):
@@ -52,7 +55,7 @@ class MyNodeIterator(MyIterator):
 
 class MogileFSMultiStorage(object):
     """
-    distributed MogileFS filesystem storage
+    MogileFS filesystem storage
     """
 
     def __init__(self, location=None, base_url=None, **kwargs):
@@ -190,13 +193,13 @@ class MogileFSMultiStorage(object):
         return base_url + name
 
     def accessed_time(self, name):
-        return None
+        return datetime.datetime.now()
 
     def created_time(self, name):
-        return None
+        return datetime.datetime.now()
 
     def modified_time(self, name):
-        return None
+        return datetime.datetime.now()
 
     def get_storage_domains(self):
         return self.storage_domains

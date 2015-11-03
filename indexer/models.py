@@ -86,6 +86,7 @@ class WorkingTask(models.Model):
                       (STATUS_TERMINATED, 'terminated'))
 
     work_type = models.ForeignKey(WorkType)
+    parent = models.ForeignKey('self', null=True, blank=True, editable=False, related_name='mychildren')
     start_time = models.DateTimeField(null=True, blank=True, editable=False)
     scheduled_for = models.DateTimeField(null=True, blank=True)
     status = models.SmallIntegerField(default=STATUS_NEW, choices=STATUS_CHOICES, editable=False)
@@ -123,6 +124,7 @@ class Log(models.Model):
         return "log id: %s to %s" % (self.pk, unicode(self.task))
 
 
+# @receiver(signals.post_save, WorkingTask)
 def indexing_task_saved(sender, instance, created, *args, **kwargs):
     if created and not instance.node:
         is_synchronus = instance.work_type.run_synchronously
@@ -150,6 +152,7 @@ def indexing_task_saved(sender, instance, created, *args, **kwargs):
                 wt.save()
                 for si in instance.solr_instances.all():
                     wt.solr_instances.add(si)
+                wt.parent = instance
             if items_processed > 0:
                 prev_qset = WorkingTask.objects.filter(node=node).exclude(pk=wt.id).order_by('-id')
                 if prev_qset:

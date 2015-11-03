@@ -28,7 +28,10 @@ class Command(TaskCommand):
     def run_task(self):
         for d2p in self.dirs_to_process:
             for k in self.get_iterator_by_key(d2p):
-                content = self.global_storage.open(k).read()
+                try:
+                    content = self.global_storage.open(k).read()
+                except Exception:
+                    continue
                 filename = os.path.join(self.storage_root, k)
                 dir = os.path.dirname(filename)
                 if not os.path.isdir(dir):
@@ -45,7 +48,7 @@ class Command(TaskCommand):
 
     def init(self):
         self.storage_root = settings.STORAGE_ROOT.rstrip('/') + '/'
-        self.dirs_to_process = ['collection2/compositions/', 'user-profiles/avatar/', 'userscollections/']
+        self.dirs_to_process = ['collection2/compositions/', 'user-profiles/avatar/', 'userscollections/', 'special_offer/logos/']
         self._reconect_mogile()
 
     def _reconect_mogile(self):

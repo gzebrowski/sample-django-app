@@ -24,7 +24,7 @@ class CategoryAdmin(TreeAdmin):
     list_display = ['id', 'name', 'active']
     prepopulated_fields = {"slug": ("name",)}
     form = CategoryForm
-    actions = ['put_selected_to_mongo', 'delete_categories']
+    actions = ['put_selected_to_mongo', 'delete_categories', 'synchronize_mongo']
 
     def get_actions(self, *args, **kwargs):
         result = super(CategoryAdmin, self).get_actions(*args, **kwargs)
@@ -36,6 +36,11 @@ class CategoryAdmin(TreeAdmin):
         synchr = CategorySynchronizer('default')
         for instance in queryset:
             synchr.update_or_create_mongo(instance)
+
+    def synchronize_mongo(self, request, queryset):
+        synchr = CategorySynchronizer('default')
+        synchr.empty_mongo()
+        self.put_selected_to_mongo(request, queryset)
 
     def delete_model(self, request, obj):
         synchr = CategorySynchronizer('default')

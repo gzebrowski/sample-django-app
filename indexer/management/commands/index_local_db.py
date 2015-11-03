@@ -14,6 +14,9 @@ from pymongo import MongoClient
 from indexer.models import Log, WorkingTask
 from product.models import Brand, Shop, MainCategory, Product, RemovedItems
 from django.template.defaultfilters import slugify
+from utils.utils import TimeDebuger
+from category.models import Category
+from treebeard.exceptions import PathOverflow
 
 
 class Helper(object):
@@ -35,7 +38,8 @@ class Command(TaskCommand, Helper):
         fields_to_normalize = [u'product_name', u'product_description',
                                u'source_text', u'product_brand',
                                u'product_category', u'product_colors',
-                               u'original_url', u'product_img', u'size']
+                               u'original_url', u'product_img', u'size',
+                               u'product_sub_category']
         for f in fields_to_normalize:
             val = p.get(f)
             if not val or not isinstance(val, basestring):
@@ -47,7 +51,8 @@ class Command(TaskCommand, Helper):
             val = val.replace('\xc2', '').replace('\xc3', '').replace('\xe2', '')
             val = val.decode('utf8', errors="replace").replace(u'\ufffd', ' ').strip()
             p[f] = val
-        extra_filter_fields = [u'source_text', u'product_brand', u'product_category', u'product_colors']
+        extra_filter_fields = [u'source_text', u'product_brand', u'product_category',
+                               u'product_colors', u'product_sub_category']
         for f in extra_filter_fields:
             val = p.get(f)
             if not val or not isinstance(val, basestring):
@@ -92,7 +97,7 @@ class Command(TaskCommand, Helper):
                 row.pop('original_price_max', None)
         for r in [u'product_name', u'product_description', u'product_img', u'size']:
             row[r] = self._strip(p.get(r))
-        for r in [u'product_category', u'product_colors']:
+        for r in [u'product_category', u'product_colors', u'product_sub_category']:
             row[r] = self._up(p[r]) if p.get(r) else None
         for mongo_row, dbrow in ((u'id', 'original_url'), (u'_id', 'external_db_id')):
             row[dbrow] = self._strip(p.get(mongo_row))
@@ -101,6 +106,7 @@ class Command(TaskCommand, Helper):
         main_categories = set([main_categories_map.get(c, c) for c in main_categories])
         main_categories = main_categories.intersection(set(self.cats.keys()))
         main_categories_keys = sorted(list(main_categories))
+        one_main_category = main_categories_keys[-1] if main_categories_keys else ''
         main_categories = [self.cats.get(c) for c in main_categories]
         aval_dict = {'0': False, 'false': False, 'no': False}
         availability = unicode(p.get('availability', 'true')).lower()
@@ -127,7 +133,7 @@ class Command(TaskCommand, Helper):
         if row['data_hash'] in self.all_hashes:
             self.all_hashes.discard(row['data_hash'])
             return True
-        elif original_url_hash in self.blocked_hashes:
+        if original_url_hash in self.blocked_hashes:
             self.blocked_hashes.discard(original_url_hash)
             return True
         try:
@@ -140,9 +146,14 @@ class Command(TaskCommand, Helper):
         else:
             row['relative_img_path'] = '%s/%s/%s%s' % (val[:3], val, fname, ext)
         original_url = '--- missing original_url ---'
+        row['category_id'] = self.get_cat_id(row, main_category=one_main_category)
+        product_sub_category = row.pop('product_sub_category', '')
+        row['product_category'] = '|'.join([one_main_category, row['product_category'],
+                                           product_sub_category])[:128]
         try:
             original_url = row.pop('original_url')
-            p, created = Product.objects.get_or_create(original_url=original_url, defaults=row)
+            p, created = Product.objects.get_or_create(
+                original_url=original_url, defaults=row)
             if not created:
                 for kk in row:
                     setattr(p, kk, row[kk])
@@ -153,9 +164,38 @@ class Command(TaskCommand, Helper):
             p.main_category.add(*main_categories)
         return True
 
+    def get_cat_id(self, row, main_category=None):
+        product_category = row.get('product_category')
+        product_sub_category = row.get('product_sub_category')
+        ks = [main_category, product_category, product_sub_category]
+        k2 = []
+        for k in ks:
+            if not k:
+                break
+            k2.append(k)
+        key = tuple(map(slugify, k2))
+        if key in self.category_ids:
+            return self.category_ids[key]
+        query_kwargs = {}
+        cat = None
+        for nr, val in enumerate(zip(k2, key)):
+            name, slug = val
+            try:
+                cat = Category.objects.get(name=name,
+                                           depth=nr + 1, **query_kwargs)
+            except Category.DoesNotExist:
+                h = cat.add_child if cat else Category.add_root
+                try:
+                    cat = h(name=name, slug=slug)
+                except PathOverflow:
+                    raise  # TODO
+                self.category_ids[tuple(key[:nr + 1])] = cat.id
+            query_kwargs = {'path__startswith': cat.path}
+        return cat.id if cat else None
+
     def run_task(self):
-        step = 30
-        reconect_by = 2000
+        step = 10000
+        reconect_by = step * 5
         start_val = self.task.items_processed
         if self.total_items:
             for start in xrange(start_val, self.total_items, step):
@@ -205,6 +245,8 @@ class Command(TaskCommand, Helper):
             for x in xrange(0, len(all_hashes), 500):
                 Product.objects.filter(source=self.task.mongodb_instance, data_hash__in=all_hashes[x:x + 500]).update(
                     availability=False, outdated=outdate_time)
+        tm_debug = self.time_debuger.dump()
+        tm_debug and self.add_log(tm_debug)
 
     def _reconect(self):
         if self.client:
@@ -212,13 +254,10 @@ class Command(TaskCommand, Helper):
                 self.client.close()
             except Exception:
                 pass
-        # self.client = MongoClient(*settings.PYMONGO_SOURCE['args'], **settings.PYMONGO_SOURCE['kwargs'])
         if self.task.mongodb_instance:
             self.client = MongoClient(self.task.mongodb_instance.host, int(self.task.mongodb_instance.port))
             self.db = self.client[self.task.mongodb_instance.db]
             self.collection = getattr(self.db, self.task.mongodb_instance.collection)
-            # self.db = self.client[settings.PYMONGO_SOURCE['db']]
-            # self.collection = getattr(self.db, settings.PYMONGO_SOURCE['collection'])
 
     def init(self):
         self.all_hashes = set(list(Product.objects.filter(availability=True).values_list('data_hash', flat=True)))
@@ -228,6 +267,8 @@ class Command(TaskCommand, Helper):
         self.all_brands = {}
         self.log_list = []
         self.used_fs_logs = 0
+        self.time_debuger = TimeDebuger()
         _cats = list(MainCategory.objects.all())
         self.cats = dict([(c.name, c) for c in _cats])
+        self.category_ids = Category.get_categories_as_keys()
         self._reconect()

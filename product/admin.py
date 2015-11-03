@@ -4,7 +4,7 @@ import datetime
 import urllib2
 import solr
 from hashlib import md5
-from collections import OrderedDict
+# from collections import OrderedDict
 from django.contrib import admin
 from django import forms
 from django.db.models import F
@@ -14,6 +14,7 @@ from category.models import Category
 from .models import Brand, Shop, MainCategory, Product, ProductTag, RemovedItems
 from utils.utils import make_thumbnail
 from utils.utils import is_my_file, get_machine_by_path
+from django.contrib import messages
 
 
 @admin.register(Brand)
@@ -123,8 +124,20 @@ class ExtraActionForm(ExtraActionFormMixIn, forms.Form):
     solr_instances = forms.ChoiceField(required=False, choices=[])
 
 
-class MyActionForm(ExtraActionFormMixIn, helpers.ActionForm):
+class CategoryFormMixIn(object):
+    def __init__(self, *args, **kwargs):
+        super(CategoryFormMixIn, self).__init__(*args, **kwargs)
+        all_cats = Category.objects.all()
+        self.fields['category'].choices = [('', '-- not needed --'), ('-1', 'XXX remove category --')] + [(c.id, unicode(c)) for c in all_cats]
+
+
+class MyActionForm(ExtraActionFormMixIn, CategoryFormMixIn, helpers.ActionForm):
     solr_instances = forms.ChoiceField(required=False, choices=[])
+    category = forms.ChoiceField(required=False, choices=[])
+
+
+class ExtraCategoryForm(CategoryFormMixIn, forms.Form):
+    category = forms.ChoiceField(required=True, choices=[])
 
 
 @admin.register(Product)
@@ -141,9 +154,10 @@ class ProductAdmin(admin.ModelAdmin):
     raw_id_fields = ['brand', 'shop']
     readonly_fields = ['external_db_id', 'crawl_date', 'outdated']
     actions = ['make_avaliable', 'make_unavaliable', 'make_file_unavaliable',
-               'add_to_collection1', 'add_to_collection2', 'add_to_collection3',
-               'remove_from_collection', 'update_search_index',
-               'mark_products', 'unmark_products', 'remove_and_block']
+               'make_file_avaliable', 'add_to_collection1', 'add_to_collection2',
+               'add_to_collection3', 'remove_from_collection', 'update_search_index',
+               'mark_products', 'unmark_products', 'remove_and_block',
+               'add_to_selected_category']
 
     def item_errors(self, obj):
         result = [x[0] for x in (('image', obj.image_error), ('data', obj.data_error), ('proc', obj.image_proc_error)) if x[1]]
@@ -152,8 +166,8 @@ class ProductAdmin(admin.ModelAdmin):
 
     def get_actions(self, request):
         actions = super(ProductAdmin, self).get_actions(request)
-        all_cats = Category.objects.all()
-        actions.update(OrderedDict(('add_to_cat_%s' % g.id, (self.__class__.join_to_cat, 'add_to_cat_%s' % g.id, "Add to category: %s" % g.__unicode__())) for g in all_cats))
+        # all_cats = Category.objects.all()
+        # actions.update(OrderedDict(('add_to_cat_%s' % g.id, (self.__class__.join_to_cat, 'add_to_cat_%s' % g.id, "Add to category: %s" % g.__unicode__())) for g in all_cats))
         return actions
 
     def shop_name(self, obj):
@@ -184,7 +198,9 @@ class ProductAdmin(admin.ModelAdmin):
         return url_rem + reverse('product_thumbnail') + '?path=' + urllib2.quote(path)
 
     def product_name_url(self, obj):
-        return '%s <a target="_blank" href="%s">-&gt;</a>' % (obj.product_name, obj.original_url)
+        return '<strong>%s</strong><br />%s <a target="_blank" href="%s">-&gt;</a>' % (
+            self._categories_as_keys.get(obj.category_id),
+            obj.product_name, obj.original_url)
     product_name_url.allow_tags = True
     product_name_url.short_description = 'product name'
 
@@ -199,6 +215,10 @@ class ProductAdmin(admin.ModelAdmin):
     def make_file_unavaliable(self, request, queryset):
         queryset.update(file_avaliable=False)
     make_file_unavaliable.short_description = "make file unavaliable"
+
+    def make_file_avaliable(self, request, queryset):
+        queryset.update(file_avaliable=True)
+    make_file_avaliable.short_description = "make file avaliable"
 
     def add_to_collection1(self, request, queryset):
         queryset.update(in_collection=1)
@@ -221,6 +241,16 @@ class ProductAdmin(admin.ModelAdmin):
             solr_inst.reindex_by_qset(queryset, queryset.filter(availability=True))
             client.close()
 
+    def add_to_selected_category(self, request, queryset):
+        ex_form = ExtraCategoryForm(request.POST)
+        if ex_form.is_valid():
+            if str(ex_form.cleaned_data.get('category')) == '-1':
+                queryset.update(category=None)
+            else:
+                queryset.update(category=ex_form.cleaned_data['category'])
+        else:
+            self.message_user(request, 'Select right category from form', messages.ERROR)
+
     def mark_products(self, request, queryset):
         queryset.update(marked=True)
 
@@ -234,6 +264,9 @@ class ProductAdmin(admin.ModelAdmin):
             queryset.update(category=cat)
 
     def changelist_view(self, request, *args, **kwargs):
+        cats = Category.get_categories_as_keys()
+        cats = dict([(y, '=>'.join(x)) for x, y in cats.items()])
+        self._categories_as_keys = cats
         request._getting_changelist = True
         result = super(ProductAdmin, self).changelist_view(request, *args, **kwargs)
         request._getting_changelist = False
